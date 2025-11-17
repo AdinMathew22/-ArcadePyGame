@@ -1,109 +1,216 @@
-import pygame, random, time
+# game.py
+import pygame, random, sys, time
 
-# ----------------- Initialization -----------------
 pygame.init()
-WIDTH, HEIGHT = 800, 400
+WIDTH, HEIGHT = 900, 480
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Arcade Scroller - Dual Player (Arcade Mode)")
+pygame.display.set_caption("2-Player Side Shooter (Shared Shop + Block + Powerup)")
 clock = pygame.time.Clock()
 
-# ----------------- Joystick Setup -----------------
-pygame.joystick.init()
-joysticks = [pygame.joystick.Joystick(i) for i in range(pygame.joystick.get_count())]
-for j in joysticks:
-    j.init()
-print(f"Detected {len(joysticks)} joystick(s).")
+# Colors
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+SKY = (135, 206, 235)
+RED = (220, 50, 50)
+BLUE = (60, 140, 255)
+GREEN = (80, 200, 120)
+YELLOW = (255, 220, 80)
+PURPLE = (160, 32, 240)
+GREY = (180, 180, 180)
+PINK = (255, 105, 180)
+CYAN = (0, 255, 255)
+DARK = (40, 40, 40)
 
-# ----------------- Player Setup -----------------
-player_img = pygame.image.load("player.png").convert_alpha()
-player_img = pygame.transform.scale(player_img, (40, 50))
+# Fonts
+FONT = pygame.font.SysFont(None, 24)
+FONT_MED = pygame.font.SysFont(None, 30)
+FONT_BIG = pygame.font.SysFont(None, 44)
+
+# Game constants
+BASE_SPEED = 5
+GRAVITY = 0.7
+JUMP_SPEED = -12
+BULLET_SPEED = 12
+ENEMY_BASE_SPEED = 2
+PLAYER_MAX_BULLETS = 6
+
+# Shop costs (shared)
+COST_HEALTH = 50
+COST_SPEED = 75
+COST_DAMAGE = 100
+
+# Ability constants
+DOUBLE_DAMAGE_DURATION_MS = 10000
+ABILITY_SPAWN_CHANCE_PER_TICK = 0.0012
+ABILITY_LIFETIME_MS = 20000
+
+# Block constants
+BLOCK_DURATION_MS = 800
+BLOCK_COOLDOWN_MS = 3000
+
+# Game state containers
+player_bullets = []       # dicts: {'rect', 'owner', 'damage'}
+enemy_bullets = []        # dicts: {'rect', 'dir', 'damage'}
+enemies = []              # dicts: {'rect','hp','type','next_shot'}
+abilities = []            # dicts: {'rect', 'type', 'spawned_at'}
+
+# Shared stats / upgrades
+score = 0
+high_score = 0
+time_limit_seconds = 5 * 60  # 5 minutes
+start_time = time.time()
+
+# Shared upgradeable stats (affect both players)
+shared_health = 3
+shared_speed = BASE_SPEED
+shared_damage = 1
+
+# Players
+player1 = pygame.Rect(120, 320, 40, 50)
+player2 = pygame.Rect(220, 320, 40, 50)
+players = [player1, player2]
+
+# Per-player dynamic state
+p_state = [
+    {"vel_y": 0, "on_ground": False, "hearts": shared_health, "last_shot": 0,
+     "block_active": False, "block_end": 0, "next_block": 0},
+    {"vel_y": 0, "on_ground": False, "hearts": shared_health, "last_shot": 0,
+     "block_active": False, "block_end": 0, "next_block": 0}
+]
+
+# Double damage ability state
+double_damage_active = False
+double_damage_ends_at = 0
+
+# Shop
+shop_open = False
+SHOP_DEBOUNCE_MS = 250
+last_shop_toggle = 0
+
+# Ground / platforms
+ground_y = 380
+platforms = [pygame.Rect(x, ground_y, 200, 100) for x in range(0, 3000, 200)]
+
+# Bullet cooldown
+PLAYER_BULLET_COOLDOWN_MS = 350
+
+# Helper draw functions
+def draw_text(s, x, y, font=FONT, color=BLACK):
+    screen.blit(font.render(s, True, color), (x, y))
+
+def draw_hearts(rect, hearts):
+    for i in range(hearts):
+        pygame.draw.rect(screen, RED, (rect.x + i*14, rect.y - 18, 12, 10))
+
+def draw_hud():
+    elapsed = int(time.time() - start_time)
+    time_left = max(0, time_limit_seconds - elapsed)
+    draw_text(f"Score: {score}", 10, 8, FONT_MED, BLACK)
+    draw_text(f"Time: {time_left}s", WIDTH//2 - 60, 8, FONT_MED, BLACK)
+    draw_text(f"High: {high_score}", WIDTH - 140, 8, FONT_MED, BLACK)
+    draw_text(f"HP: {shared_health} SPD: {shared_speed} DMG: {shared_damage}", 10, HEIGHT - 28, FONT, BLACK)
 
 def reset_game():
-    global player1, player2, vel_y1, vel_y2, on_ground1, on_ground2
-    global hearts_p1, hearts_p2, score, enemies, enemies2, bullets, enemy_bullets
-    global abilities, can_fly1, can_fly2, speed1, speed2, game_over
-
-    player1 = player_img.get_rect(topleft=(100, 300))
-    player2 = player_img.get_rect(topleft=(200, 300))
-    vel_y1 = vel_y2 = 0
-    on_ground1 = on_ground2 = False
-    hearts_p1 = hearts_p2 = 3
+    global player_bullets, enemy_bullets, enemies, abilities
+    global score, start_time, double_damage_active, double_damage_ends_at
+    global p_state, player1, player2, game_over
+    player_bullets = []
+    enemy_bullets = []
+    enemies = []
+    abilities = []
     score = 0
-    enemies.clear()
-    enemies2.clear()
-    bullets.clear()
-    enemy_bullets.clear()
-    abilities.clear()
-    can_fly1 = can_fly2 = False
-    speed1 = speed2 = base_speed
+    start_time = time.time()
+    double_damage_active = False
+    double_damage_ends_at = 0
+
+    # reset players
+    player1.x, player1.y = 120, 320
+    player2.x, player2.y = 220, 320
+    p_state[0] = {"vel_y": 0, "on_ground": False, "hearts": shared_health, "last_shot": 0,
+                  "block_active": False, "block_end": 0, "next_block": 0}
+    p_state[1] = {"vel_y": 0, "on_ground": False, "hearts": shared_health, "last_shot": 0,
+                  "block_active": False, "block_end": 0, "next_block": 0}
     game_over = False
 
-base_speed = 5
-gravity = 0.5
-jump_speed = -10
-speed1 = base_speed
-speed2 = base_speed
-hearts_p1 = hearts_p2 = 3
-score = 0
+def spawn_enemies_tick():
+    if random.random() < 0.018:
+        rect = pygame.Rect(WIDTH + 20, ground_y - 40, 36, 36)
+        enemies.append({"rect": rect, "hp": 1 + score//150, "type": "walker"})
+    if random.random() < 0.006:
+        rect = pygame.Rect(WIDTH + 20, ground_y - 46, 36, 46)
+        enemies.append({"rect": rect, "hp": 2 + score//200, "type": "shooter", "next_shot": pygame.time.get_ticks() + random.randint(700,2500)})
 
-# ----------------- Assets -----------------
-bullet_img = pygame.image.load("laserbullet.png").convert_alpha()
-bullet_img = pygame.transform.scale(bullet_img, (30, 20))
-enemy_img = pygame.image.load("enemy.png").convert_alpha()
-enemy_img = pygame.transform.scale(enemy_img, (40, 40))
-enemy2_img = pygame.image.load("enemy2.jpg").convert_alpha()
-enemy2_img = pygame.transform.scale(enemy2_img, (40, 40))
-wing_img = pygame.image.load("wings.png").convert_alpha()
-wing_img = pygame.transform.scale(wing_img, (30, 30))
-speed_img = pygame.image.load("speed.png").convert_alpha()
-speed_img = pygame.transform.scale(speed_img, (30, 30))
+def maybe_spawn_ability():
+    if random.random() < ABILITY_SPAWN_CHANCE_PER_TICK:
+        x = random.randint(220, WIDTH-150)
+        rect = pygame.Rect(x, ground_y - 28, 22, 22)
+        abilities.append({"rect": rect, "type": "pink_power", "spawned_at": pygame.time.get_ticks()})
 
-# ----------------- Lists -----------------
-bullets = []
-enemy_bullets = []
-abilities = []
-enemies = []
-enemies2 = []
+def consume_ability(ab):
+    global double_damage_active, double_damage_ends_at
+    if ab["type"] == "pink_power":
+        double_damage_active = True
+        double_damage_ends_at = pygame.time.get_ticks() + DOUBLE_DAMAGE_DURATION_MS
 
-bullet_cooldown = 500
-last_shot_p1 = 0
-last_shot_p2 = 0
+def draw_shop():
+    pygame.draw.rect(screen, DARK, (80, 60, WIDTH - 160, HEIGHT - 120))
+    pygame.draw.rect(screen, WHITE, (80, 60, WIDTH - 160, HEIGHT - 120), 3)
+    title = FONT_BIG.render("SHOP (shared upgrades)", True, YELLOW)
+    screen.blit(title, (WIDTH//2 - title.get_width()//2, 80))
+    draw_text(f"Score: {score}", WIDTH//2 - 50, 130, FONT_MED, WHITE)
+    draw_text(f"1) +1 Health (Cost {COST_HEALTH})", 130, 190, FONT_MED, WHITE)
+    draw_text(f"2) +1 Speed  (Cost {COST_SPEED})", 130, 240, FONT_MED, WHITE)
+    draw_text(f"3) +1 Damage (Cost {COST_DAMAGE})", 130, 290, FONT_MED, WHITE)
+    draw_text("Press H to resume", WIDTH//2 - 80, HEIGHT - 110, FONT_MED, YELLOW)
+    draw_text(f"Current shared: HP={shared_health} SPD={shared_speed} DMG={shared_damage}", 130, 330, FONT, WHITE)
 
-wing_timer_p1 = wing_timer_p2 = 0
-speed_timer_p1 = speed_timer_p2 = 0
-can_fly1 = can_fly2 = False
+def handle_shop_input(keys):
+    global score, shared_health, shared_speed, shared_damage
+    if keys[pygame.K_1] and score >= COST_HEALTH:
+        shared_health += 1
+        score -= COST_HEALTH
+        for s in p_state:
+            s["hearts"] = shared_health
+    if keys[pygame.K_2] and score >= COST_SPEED:
+        shared_speed += 1
+        score -= COST_SPEED
+    if keys[pygame.K_3] and score >= COST_DAMAGE:
+        shared_damage += 1
+        score -= COST_DAMAGE
 
-# ----------------- Environment -----------------
-ground_y = 350
-platforms = [pygame.Rect(x, ground_y, 100, 50) for x in range(0, 1000, 100)]
+def draw_enemy(e):
+    color = RED if e["type"] == "walker" else YELLOW
+    pygame.draw.rect(screen, color, e["rect"])
+    w = 28
+    if e["type"] == "walker":
+        max_hp = max(1, 1 + score//150)
+    else:
+        max_hp = max(1, 2 + score//200)
+    fill = int((e["hp"] / max_hp) * w)
+    pygame.draw.rect(screen, DARK, (e["rect"].x, e["rect"].y - 10, w, 6))
+    pygame.draw.rect(screen, GREEN, (e["rect"].x, e["rect"].y - 10, fill, 6))
 
-def spawn_enemy():
-    if random.randint(0, 200) == 0:
-        rect = enemy_img.get_rect(topleft=(WIDTH, ground_y - 40))
-        enemies.append({"rect": rect, "hp": 1 + score // 100})
-    if random.randint(0, 300) == 0:
-        rect = enemy2_img.get_rect(topleft=(WIDTH - 60, ground_y - 40))
-        enemies2.append({
-            "rect": rect,
-            "hp": 2 + score // 200,
-            "next_shot": pygame.time.get_ticks() + random.randint(500, 2000)
-        })
+def show_game_over():
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0,0,0,160))
+    screen.blit(overlay, (0,0))
+    t = FONT_BIG.render("GAME OVER", True, YELLOW)
+    screen.blit(t, (WIDTH//2 - t.get_width()//2, HEIGHT//2 - 50))
+    s = FONT_MED.render("Press R to Restart or Q to Quit", True, WHITE)
+    screen.blit(s, (WIDTH//2 - s.get_width()//2, HEIGHT//2 + 10))
 
-def spawn_ability():
-    if random.randint(0, 1000) == 0:
-        typ = random.choice(["wings", "speed"])
-        rect = pygame.Rect(random.randint(100, WIDTH - 50), ground_y - 30, 30, 30)
-        abilities.append({"rect": rect, "type": typ})
-
-# ----------------- Main Loop -----------------
-reset_game()
-running = True
+# initial reset
 game_over = False
+reset_game()
 
+# main loop
+running = True
+last_shop_toggle = 0
 while running:
-    clock.tick(60)
-    current_time = pygame.time.get_ticks()
-    screen.fill((135, 206, 235))
+    dt = clock.tick(60)
+    now_ms = pygame.time.get_ticks()
+    elapsed_s = int(time.time() - start_time)
+    time_left = max(0, time_limit_seconds - elapsed_s)
 
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -111,196 +218,250 @@ while running:
 
     keys = pygame.key.get_pressed()
 
-    # ----------------- Game Over -----------------
-    if game_over:
-        font = pygame.font.SysFont(None, 48)
-        text = font.render("GAME OVER - Press R or START to Restart", True, (255, 0, 0))
-        screen.blit(text, (100, HEIGHT // 2))
-        pygame.display.flip()
+    # shop toggle (debounced)
+    if keys[pygame.K_h] and (now_ms - last_shop_toggle > SHOP_DEBOUNCE_MS):
+        shop_open = not shop_open
+        last_shop_toggle = now_ms
 
-        if keys[pygame.K_r] or (len(joysticks) > 0 and joysticks[0].get_button(9)):  # Start button fallback
-            reset_game()
+    # if shop open: pause gameplay updates, draw shop, handle inputs
+    if shop_open:
+        screen.fill(SKY)
+        draw_shop()
+        handle_shop_input(keys)
+        draw_text(f"Score: {score}", WIDTH - 180, 120, FONT_MED, WHITE)
+        pygame.display.flip()
         continue
 
-    # ----------------- PLAYER 1 CONTROLS -----------------
-    joy1 = joysticks[0] if len(joysticks) > 0 else None
-    x1 = joy1.get_axis(0) if joy1 else (keys[pygame.K_RIGHT] - keys[pygame.K_LEFT])
-    y1 = joy1.get_axis(1) if joy1 else (keys[pygame.K_DOWN] - keys[pygame.K_UP])
-    shoot1 = joy1.get_button(0) if joy1 else keys[pygame.K_SLASH]
+    # normal gameplay updates
+    screen.fill(SKY)
 
-    if abs(x1) > 0.2:
-        player1.x += int(x1 * speed1)
-    if can_fly1:
-        player1.y += int(y1 * speed1)
-    else:
-        if y1 < -0.5 and on_ground1:
-            vel_y1 = jump_speed
-    if shoot1 and current_time - last_shot_p1 >= bullet_cooldown:
-        rect = bullet_img.get_rect(midleft=player1.midright)
-        bullets.append({"rect": rect, "dir": 1, "owner": 1})
-        last_shot_p1 = current_time
+    # spawn enemies & abilities
+    spawn_enemies_tick()
+    maybe_spawn_ability()
 
-    # ----------------- PLAYER 2 CONTROLS -----------------
-    joy2 = joysticks[1] if len(joysticks) > 1 else None
-    x2 = joy2.get_axis(0) if joy2 else (keys[pygame.K_d] - keys[pygame.K_a])
-    y2 = joy2.get_axis(1) if joy2 else (keys[pygame.K_s] - keys[pygame.K_w])
-    shoot2 = joy2.get_button(0) if joy2 else keys[pygame.K_e]
+    # --- PLAYER INPUT & ACTIONS ---
+    # Movement axes
+    move1 = (keys[pygame.K_RIGHT] - keys[pygame.K_LEFT])
+    move2 = (keys[pygame.K_d] - keys[pygame.K_a])
 
-    if abs(x2) > 0.2:
-        player2.x += int(x2 * speed2)
-    if can_fly2:
-        player2.y += int(y2 * speed2)
-    else:
-        if y2 < -0.5 and on_ground2:
-            vel_y2 = jump_speed
-    if shoot2 and current_time - last_shot_p2 >= bullet_cooldown:
-        rect = bullet_img.get_rect(midleft=player2.midright)
-        bullets.append({"rect": rect, "dir": 1, "owner": 2})
-        last_shot_p2 = current_time
+    if abs(move1) > 0:
+        player1.x += int(move1 * shared_speed)
+    if abs(move2) > 0:
+        player2.x += int(move2 * shared_speed)
 
-    # ----------------- Physics -----------------
-    if not can_fly1:
-        vel_y1 += gravity
-        player1.y += vel_y1
-    if not can_fly2:
-        vel_y2 += gravity
-        player2.y += vel_y2
+    # Jump
+    if keys[pygame.K_UP] and p_state[0]["on_ground"]:
+        p_state[0]["vel_y"] = JUMP_SPEED
+        p_state[0]["on_ground"] = False
+    if keys[pygame.K_w] and p_state[1]["on_ground"]:
+        p_state[1]["vel_y"] = JUMP_SPEED
+        p_state[1]["on_ground"] = False
 
-    on_ground1 = on_ground2 = False
-    for plat in platforms:
-        if player1.colliderect(plat) and vel_y1 >= 0:
-            player1.bottom = plat.top
-            vel_y1 = 0
-            on_ground1 = True
-        if player2.colliderect(plat) and vel_y2 >= 0:
-            player2.bottom = plat.top
-            vel_y2 = 0
-            on_ground2 = True
+    # Shooting keys
+    # Player1: Right Ctrl
+    if (keys[pygame.K_e] or keys[pygame.K_KP0]):
+        if now_ms - p_state[0]["last_shot"] >= PLAYER_BULLET_COOLDOWN_MS and len([b for b in player_bullets if b['owner']==1]) < PLAYER_MAX_BULLETS:
+            dmg = shared_damage * (2 if double_damage_active else 1)
+            rect = pygame.Rect(player1.right, player1.centery - 6, 12, 6)
+            player_bullets.append({"rect": rect, "owner": 1, "damage": dmg})
+            p_state[0]["last_shot"] = now_ms
+    # Player2: Left Shift
+    if keys[pygame.K_SLASH]:
+        if now_ms - p_state[1]["last_shot"] >= PLAYER_BULLET_COOLDOWN_MS and len([b for b in player_bullets if b['owner']==2]) < PLAYER_MAX_BULLETS:
+            dmg = shared_damage * (2 if double_damage_active else 1)
+            rect = pygame.Rect(player2.right, player2.centery - 6, 12, 6)
+            player_bullets.append({"rect": rect, "owner": 2, "damage": dmg})
+            p_state[1]["last_shot"] = now_ms
 
-    # ----------------- Bullets -----------------
-    for b in bullets[:]:
-        b["rect"].x += b["dir"] * 10
-        if b["rect"].right < 0 or b["rect"].left > WIDTH:
-            bullets.remove(b)
+    # --- BLOCK ACTIVATION ---
+    # Player1 block: Right Shift
+    if keys[pygame.K_RSHIFT] and now_ms >= p_state[0]["next_block"]:
+        p_state[0]["block_active"] = True
+        p_state[0]["block_end"] = now_ms + BLOCK_DURATION_MS
+        p_state[0]["next_block"] = now_ms + BLOCK_COOLDOWN_MS
+    # Player2 block: Q
+    if keys[pygame.K_q] and now_ms >= p_state[1]["next_block"]:
+        p_state[1]["block_active"] = True
+        p_state[1]["block_end"] = now_ms + BLOCK_DURATION_MS
+        p_state[1]["next_block"] = now_ms + BLOCK_COOLDOWN_MS
+
+    # turn off block when expired
+    for s in p_state:
+        if s["block_active"] and now_ms >= s["block_end"]:
+            s["block_active"] = False
+
+    # apply gravity & platform collision for players
+    for idx, p in enumerate(players):
+        s = p_state[idx]
+        s["vel_y"] += GRAVITY
+        p.y += s["vel_y"]
+        s["on_ground"] = False
+        for plat in platforms:
+            if p.colliderect(plat) and s["vel_y"] >= 0:
+                p.bottom = plat.top
+                s["vel_y"] = 0
+                s["on_ground"] = True
+
+    # --- PLAYER BULLETS UPDATE ---
+    for b in player_bullets[:]:
+        b["rect"].x += BULLET_SPEED
+        if b["rect"].left > WIDTH:
+            player_bullets.remove(b)
             continue
+        hit_any = False
         for e in enemies[:]:
             if b["rect"].colliderect(e["rect"]):
-                e["hp"] -= 1
+                e["hp"] -= b["damage"]
+                hit_any = True
                 if e["hp"] <= 0:
+                    if random.random() < 0.18:
+                        abilities.append({"rect": pygame.Rect(e["rect"].x, e["rect"].y - 26, 22, 22), "type": "pink_power", "spawned_at": pygame.time.get_ticks()})
                     enemies.remove(e)
                     score += 10
-                bullets.remove(b)
                 break
-        for e2 in enemies2[:]:
-            if b["rect"].colliderect(e2["rect"]):
-                e2["hp"] -= 1
-                if e2["hp"] <= 0:
-                    enemies2.remove(e2)
-                    score += 20
-                bullets.remove(b)
-                break
+        if hit_any and b in player_bullets:
+            player_bullets.remove(b)
 
-    # ----------------- Enemy 2 Firing -----------------
-    for e2 in enemies2:
-        if current_time >= e2["next_shot"]:
-            rect = bullet_img.get_rect(midright=e2["rect"].midleft)
-            enemy_bullets.append({"rect": rect, "dir": -1})
-            e2["next_shot"] = current_time + random.randint(500, 2000)
-
-    for b in enemy_bullets[:]:
-        b["rect"].x += b["dir"] * 8
-        if b["rect"].right < 0:
-            enemy_bullets.remove(b)
-            continue
-        if b["rect"].colliderect(player1):
-            hearts_p1 -= 1
-            enemy_bullets.remove(b)
-        elif b["rect"].colliderect(player2):
-            hearts_p2 -= 1
-            enemy_bullets.remove(b)
-
-    # ----------------- Enemies Move -----------------
-    for e in enemies:
-        e["rect"].x -= 2 + score * 0.005
-    enemies = [e for e in enemies if e["rect"].right > 0]
-
-    # ----------------- Collisions -----------------
+    # --- ENEMY UPDATE & SHOOTING ---
     for e in enemies[:]:
-        if player1.colliderect(e["rect"]):
-            hearts_p1 -= 1
-            enemies.remove(e)
-        elif player2.colliderect(e["rect"]):
-            hearts_p2 -= 1
+        e["rect"].x -= ENEMY_BASE_SPEED + (score * 0.002)
+        if e["type"] == "shooter" and pygame.time.get_ticks() >= e.get("next_shot", 0):
+            rect = pygame.Rect(e["rect"].left - 12, e["rect"].centery - 4, 10, 6)
+            enemy_bullets.append({"rect": rect, "dir": -1, "damage": 1})
+            e["next_shot"] = pygame.time.get_ticks() + random.randint(900, 2400)
+        if e["rect"].right < 0:
             enemies.remove(e)
 
-    # ----------------- Spawn -----------------
-    spawn_enemy()
-    spawn_ability()
+    # --- ENEMY BULLETS UPDATE (blocking interaction) ---
+    for eb in enemy_bullets[:]:
+        eb["rect"].x += eb["dir"] * 9
+        if eb["rect"].right < 0 or eb["rect"].left > WIDTH:
+            enemy_bullets.remove(eb)
+            continue
+        # check player1 block
+        if eb["rect"].colliderect(player1):
+            if p_state[0]["block_active"]:
+                # bullet destroyed by block
+                if eb in enemy_bullets: enemy_bullets.remove(eb)
+            else:
+                p_state[0]["hearts"] -= 1
+                if eb in enemy_bullets: enemy_bullets.remove(eb)
+            continue
+        # check player2 block
+        if eb["rect"].colliderect(player2):
+            if p_state[1]["block_active"]:
+                if eb in enemy_bullets: enemy_bullets.remove(eb)
+            else:
+                p_state[1]["hearts"] -= 1
+                if eb in enemy_bullets: enemy_bullets.remove(eb)
+            continue
 
-    # ----------------- Ability Pickup -----------------
+    # --- ENEMY COLLISIONS WITH PLAYERS (blocking) ---
+    for e in enemies[:]:
+        if e["rect"].colliderect(player1):
+            if p_state[0]["block_active"]:
+                # destroy enemy if colliding while blocking
+                if e in enemies: enemies.remove(e)
+            else:
+                p_state[0]["hearts"] -= 1
+                if e in enemies: enemies.remove(e)
+        elif e["rect"].colliderect(player2):
+            if p_state[1]["block_active"]:
+                if e in enemies: enemies.remove(e)
+            else:
+                p_state[1]["hearts"] -= 1
+                if e in enemies: enemies.remove(e)
+
+    # --- ABILITY PICKUPS ---
     for ab in abilities[:]:
-        if player1.colliderect(ab["rect"]):
-            dur = random.randint(20000, 30000)
-            if ab["type"] == "wings":
-                can_fly1 = True
-                wing_timer_p1 = current_time + dur
-            elif ab["type"] == "speed":
-                speed1 = base_speed * 1.5
-                speed_timer_p1 = current_time + dur
+        if pygame.time.get_ticks() - ab["spawned_at"] > ABILITY_LIFETIME_MS:
             abilities.remove(ab)
-        elif player2.colliderect(ab["rect"]):
-            dur = random.randint(20000, 30000)
-            if ab["type"] == "wings":
-                can_fly2 = True
-                wing_timer_p2 = current_time + dur
-            elif ab["type"] == "speed":
-                speed2 = base_speed * 1.5
-                speed_timer_p2 = current_time + dur
+            continue
+        if ab["rect"].colliderect(player1) or ab["rect"].colliderect(player2):
+            consume_ability(ab)
             abilities.remove(ab)
 
-    # ----------------- Ability Expiration -----------------
-    if can_fly1 and current_time > wing_timer_p1:
-        can_fly1 = False
-    if can_fly2 and current_time > wing_timer_p2:
-        can_fly2 = False
-    if speed1 > base_speed and current_time > speed_timer_p1:
-        speed1 = base_speed
-    if speed2 > base_speed and current_time > speed_timer_p2:
-        speed2 = base_speed
+    # expire double damage
+    if double_damage_active and pygame.time.get_ticks() > double_damage_ends_at:
+        double_damage_active = False
 
-    # ----------------- Check Game Over -----------------
-    if hearts_p1 <= 0:
+    # update player death & game over
+    if p_state[0]["hearts"] <= 0:
         player1.y = 2000
-    if hearts_p2 <= 0:
+    if p_state[1]["hearts"] <= 0:
         player2.y = 2000
-    if hearts_p1 <= 0 and hearts_p2 <= 0:
+    if p_state[0]["hearts"] <= 0 and p_state[1]["hearts"] <= 0:
+        if score > high_score:
+            high_score = score
         game_over = True
 
-    # ----------------- Draw Everything -----------------
+    # draw world
     for plat in platforms:
-        pygame.draw.rect(screen, (50, 200, 50), plat)
-    if hearts_p1 > 0:
-        screen.blit(player_img, player1)
-    if hearts_p2 > 0:
-        screen.blit(player_img, player2)
+        pygame.draw.rect(screen, GREEN, plat)
+
+    # draw players
+    if p_state[0]["hearts"] > 0:
+        pygame.draw.rect(screen, BLUE, player1)
+    if p_state[1]["hearts"] > 0:
+        pygame.draw.rect(screen, PURPLE, player2)
+
+    # draw enemies
     for e in enemies:
-        screen.blit(enemy_img, e["rect"])
-    for e2 in enemies2:
-        screen.blit(enemy2_img, e2["rect"])
+        draw_enemy(e)
+
+    # draw bullets
+    for b in player_bullets:
+        pygame.draw.rect(screen, BLACK, b["rect"])
+    for eb in enemy_bullets:
+        pygame.draw.rect(screen, BLACK, eb["rect"])
+
+    # draw abilities
     for ab in abilities:
-        img = wing_img if ab["type"] == "wings" else speed_img
-        screen.blit(img, ab["rect"])
-    for b in bullets:
-        screen.blit(bullet_img, b["rect"])
-    for b in enemy_bullets:
-        screen.blit(bullet_img, b["rect"])
-    for i in range(hearts_p1):
-        pygame.draw.rect(screen, (255, 0, 0), (player1.x + i * 15, player1.y - 20, 10, 10))
-    for i in range(hearts_p2):
-        pygame.draw.rect(screen, (255, 0, 0), (player2.x + i * 15, player2.y - 20, 10, 10))
-    font = pygame.font.SysFont(None, 32)
-    screen.blit(font.render(f"Score: {score}", True, (0, 0, 0)), (10, 10))
+        pygame.draw.rect(screen, PINK, ab["rect"])
+
+    # draw shields around players if blocking
+    if p_state[0]["block_active"]:
+        pygame.draw.rect(screen, CYAN, (player1.x - 6, player1.y - 6, player1.width + 12, player1.height + 12), 3)
+    if p_state[1]["block_active"]:
+        pygame.draw.rect(screen, CYAN, (player2.x - 6, player2.y - 6, player2.width + 12, player2.height + 12), 3)
+
+    # draw hearts above players
+    draw_hearts(player1, p_state[0]["hearts"])
+    draw_hearts(player2, p_state[1]["hearts"])
+
+    # draw HUD and double damage indicator
+    draw_hud()
+    if double_damage_active:
+        draw_text("DOUBLE DAMAGE ACTIVE!", WIDTH//2 - 120, 36, FONT_MED, RED)
+
+    # draw block cooldown UI above players
+    cool1 = max(0, (p_state[0]["next_block"] - now_ms) // 1000)
+    cool2 = max(0, (p_state[1]["next_block"] - now_ms) // 1000)
+    # show ms remaining if less than 1s
+    if p_state[0]["next_block"] - now_ms < 1000 and p_state[0]["next_block"] - now_ms > 0:
+        cool1 = (p_state[0]["next_block"] - now_ms) // 100
+        draw_text(f"Block CD: {cool1*0.1:.1f}s", player1.x, player1.y - 42, FONT)
+    else:
+        draw_text(f"Block CD: {cool1}s", player1.x, player1.y - 42, FONT)
+    if p_state[1]["next_block"] - now_ms < 1000 and p_state[1]["next_block"] - now_ms > 0:
+        cool2 = (p_state[1]["next_block"] - now_ms) // 100
+        draw_text(f"Block CD: {cool2*0.1:.1f}s", player2.x, player2.y - 42, FONT)
+    else:
+        draw_text(f"Block CD: {cool2}s", player2.x, player2.y - 42, FONT)
+
+    # show shop hint
+    draw_text("Press H for Shop (shared upgrades)", 10, HEIGHT - 26, FONT)
+
+    # game over overlay
+    if game_over:
+        show_game_over()
+        if keys[pygame.K_r]:
+            reset_game()
+            game_over = False
+        if keys[pygame.K_q]:
+            running = False
 
     pygame.display.flip()
 
 pygame.quit()
+sys.exit()
