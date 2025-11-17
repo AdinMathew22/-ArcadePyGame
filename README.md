@@ -1,48 +1,105 @@
-Two-Player Infinite Scroller Arcade Game
+Timeline of Game SO far
+1. Two-Player Platform/Side-Scroller System
 
-Project Description:
-A two-player infinite scroller arcade game built using Pygame. Players navigate a scrolling ground, collect power-ups for speed boosts and temporary flying, and compete or explore within the game environment.
+Two independently controlled players (P1 + P2)
 
-How to Run the Project:
+Ground + platform collision
 
-Ensure Python and Pygame are installed by running py -m pip install pygame.
+Individual health, jumping, movement, shooting, and blocking
+✔ Implemented effectively — stable movement & consistent collision.
 
-Open the project folder in Visual Studio Code.
+2. Shooting System for Both Players
 
-Run the game with python game.py.
+P1 shoots with Right Ctrl
 
-Controls:
+P2 shoots with Left Shift
 
-Player 1: Arrow keys to move, CTRL to jump.
+Bullet cap + cooldown per player
 
-Player 2: WASD to move, SPACE to jump.
+Bullets deal damage and despawn properly
+✔ Works well — balanced, readable, and clean hit detection.
 
-Features Implemented:
+3. Enemy System
 
-Two-player movement with independent controls.
+Walkers and Shooters
 
-Infinite scrolling ground.
+Shooter enemies fire bullets
 
-Power-ups: speed boost (1.5× speed for 5 seconds) and wings/flying (10 seconds).
+Enemies scale with score
 
-Random power-up respawn (20–30 seconds).
+Enemy HP bars
 
-Collision detection with ground and power-ups.
+Enemies drop abilities occasionally
+✔ Enemy behavior solid — movement and combat are reliable.
 
-Planned Features:
+4. Enemy Bullets With Player Blocking Mechanic
 
-Score tracking for each player.
+Players can activate a temporary shield:
 
-Obstacles or enemies.
+P1 block = Right Shift
 
-Sound effects.
+P2 block = Q
 
-UI elements such as timers and power-up indicators.
+Bullet collisions check if shield is active
 
-Learning Journal:
+If blocking → bullet is destroyed
 
-Learned Pygame basics including creating a game window, player movement, gravity, collisions, and drawing.
+If not blocking → damage taken
+✔ Very effective — block windows & cooldowns work smoothly.
 
-Challenges included installing Pygame (solved with py -m pip install pygame) and linking the project to GitHub using VS Code and Git Bash.
+5. Pink Ability Block (Double Damage Power-Up)
 
-Applied learning by creating a two-player prototype with power-ups and infinite scrolling.
+Random spawn rate
+
+Limited lifetime
+
+Pick-up grants double damage for 10 seconds
+
+UI indicator shown
+✔ Functional and noticeable — ability timing & effects work.
+
+6. Shared Shop System
+
+Open/close with H
+
+Pauses gameplay while open
+
+Shared upgrades available:
+
++1 Health
+
++1 Speed
+
++1 Damage
+
+Shared score used as currency
+
+Upgrades apply to both players
+✔ Effective UI and functionality — simple but clean shop interface.
+
+7. Scoring, High Score Tracking, and Timer
+
+Score increases when enemies are killed
+
+5-minute timer
+
+High score updates when game ends
+
+HUD shows all info clearly
+✔ HUD is strong and readable — good at showing game state.
+
+8. Game Over + Restart Flow
+
+Transparent overlay
+
+Options: R = restart, Q = quit
+
+Score and difficulty reset properly
+✔ Works as intended — smooth loop for testing and gameplay.
+
+9. Rectangle-Only Graphics (No PNGs)
+
+All characters, enemies, bullets, platforms, and UI are rectangles
+
+100% PyInstaller-compatible
+✔ Executed perfectly — simple visuals but ideal for performance
