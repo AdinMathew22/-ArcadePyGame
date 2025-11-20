@@ -1,10 +1,10 @@
 # game.py
-import pygame, random, sys, time
+import pygame, random, sys, time, math
 
 pygame.init()
 WIDTH, HEIGHT = 900, 480
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("2-Player Side Shooter (Shared Shop + Block + Powerup)")
+pygame.display.set_caption("2-Player Side Shooter (Shared Shop + Block + Boss)")
 clock = pygame.time.Clock()
 
 # Colors
@@ -20,6 +20,7 @@ GREY = (180, 180, 180)
 PINK = (255, 105, 180)
 CYAN = (0, 255, 255)
 DARK = (40, 40, 40)
+BOSS_COLOR = (90, 20, 120)  # dark purple
 
 # Fonts
 FONT = pygame.font.SysFont(None, 24)
@@ -94,6 +95,23 @@ platforms = [pygame.Rect(x, ground_y, 200, 100) for x in range(0, 3000, 200)]
 # Bullet cooldown
 PLAYER_BULLET_COOLDOWN_MS = 350
 
+# Boss state (spawn at 120s)
+boss_spawned = False
+boss_active = False
+boss = None  # will be dict containing boss info
+BOSS_HP = 300
+BOSS_W, BOSS_H = 160, 160
+BOSS_X = WIDTH - 200
+BOSS_MIN_Y = 60
+BOSS_MAX_Y = ground_y - BOSS_H - 20
+BOSS_OSC_SPEED = 0.002  # for sine movement
+
+# Laser mechanics
+LASER_TELEGRAPH_MS = 600
+LASER_BEAM_MS = 400
+LASER_COOLDOWN_MIN = 900
+LASER_COOLDOWN_MAX = 2000
+
 # Helper draw functions
 def draw_text(s, x, y, font=FONT, color=BLACK):
     screen.blit(font.render(s, True, color), (x, y))
@@ -113,7 +131,7 @@ def draw_hud():
 def reset_game():
     global player_bullets, enemy_bullets, enemies, abilities
     global score, start_time, double_damage_active, double_damage_ends_at
-    global p_state, player1, player2, game_over
+    global p_state, player1, player2, game_over, boss_spawned, boss_active, boss
     player_bullets = []
     enemy_bullets = []
     enemies = []
@@ -131,8 +149,14 @@ def reset_game():
     p_state[1] = {"vel_y": 0, "on_ground": False, "hearts": shared_health, "last_shot": 0,
                   "block_active": False, "block_end": 0, "next_block": 0}
     game_over = False
+    boss_spawned = False
+    boss_active = False
+    boss = None
 
 def spawn_enemies_tick():
+    # don't spawn normal enemies during boss fight
+    if boss_active:
+        return
     if random.random() < 0.018:
         rect = pygame.Rect(WIDTH + 20, ground_y - 40, 36, 36)
         enemies.append({"rect": rect, "hp": 1 + score//150, "type": "walker"})
@@ -141,7 +165,7 @@ def spawn_enemies_tick():
         enemies.append({"rect": rect, "hp": 2 + score//200, "type": "shooter", "next_shot": pygame.time.get_ticks() + random.randint(700,2500)})
 
 def maybe_spawn_ability():
-    if random.random() < ABILITY_SPAWN_CHANCE_PER_TICK:
+    if random.random() < ABILITY_SPAWN_CHANCE_PER_TICK and not boss_active:
         x = random.randint(220, WIDTH-150)
         rect = pygame.Rect(x, ground_y - 28, 22, 22)
         abilities.append({"rect": rect, "type": "pink_power", "spawned_at": pygame.time.get_ticks()})
@@ -199,6 +223,86 @@ def show_game_over():
     s = FONT_MED.render("Press R to Restart or Q to Quit", True, WHITE)
     screen.blit(s, (WIDTH//2 - s.get_width()//2, HEIGHT//2 + 10))
 
+# boss helpers
+def spawn_boss():
+    global boss_active, boss_spawned, boss
+    boss_spawned = True
+    boss_active = True
+    boss = {
+        "rect": pygame.Rect(BOSS_X, (BOSS_MIN_Y + BOSS_MAX_Y)//2, BOSS_W, BOSS_H),
+        "hp": BOSS_HP,
+        "spawned_at": pygame.time.get_ticks(),
+        "telegraph_y": None,
+        "telegraph_shows_at": 0,
+        "laser_fire_at": 0,
+        "laser_end_at": 0,
+        "next_laser_at": pygame.time.get_ticks() + 800,
+        "beam_active": False,
+        "telegraph_active": False,
+        "osc_phase": 0.0
+    }
+    # clear normal enemies
+    enemies.clear()
+    enemy_bullets.clear()
+    # give players full flight control state (they already will be allowed to fly during boss logic)
+    for s in p_state:
+        s["vel_y"] = 0
+
+def update_boss_movement(b):
+    # small up/down bobbing using sine
+    b["osc_phase"] += BOSS_OSC_SPEED * clock.get_time()
+    mid = (BOSS_MIN_Y + BOSS_MAX_Y) / 2
+    amp = (BOSS_MAX_Y - BOSS_MIN_Y) / 2
+    new_y = mid + math.sin(b["osc_phase"]) * amp
+    b["rect"].y = int(new_y)
+
+def boss_laser_logic(b):
+    now = pygame.time.get_ticks()
+    # schedule a telegraph -> fire -> cooldown sequence
+    if not b["telegraph_active"] and not b["beam_active"] and now >= b["next_laser_at"]:
+        # schedule telegraph (thin red line) then firing
+        y = random.randint(80, ground_y - 80)
+        b["telegraph_y"] = y
+        b["telegraph_shows_at"] = now
+        b["laser_fire_at"] = now + LASER_TELEGRAPH_MS
+        b["laser_end_at"] = b["laser_fire_at"] + LASER_BEAM_MS
+        b["telegraph_active"] = True
+    # turn on beam
+    if b["telegraph_active"] and now >= b["laser_fire_at"] and not b["beam_active"]:
+        b["beam_active"] = True
+        b["telegraph_active"] = False
+        # after firing we will set next_laser_at
+    # turn off beam and set next_laser
+    if b["beam_active"] and now >= b["laser_end_at"]:
+        b["beam_active"] = False
+        b["telegraph_y"] = None
+        b["next_laser_at"] = now + random.randint(LASER_COOLDOWN_MIN, LASER_COOLDOWN_MAX)
+
+def draw_boss(b):
+    pygame.draw.rect(screen, BOSS_COLOR, b["rect"])
+    # HP bar
+    bar_w = 300
+    bar_h = 14
+    x = WIDTH//2 - bar_w//2
+    y = 20
+    pygame.draw.rect(screen, DARK, (x, y, bar_w, bar_h))
+    fill = int((b["hp"] / BOSS_HP) * bar_w)
+    pygame.draw.rect(screen, GREEN, (x, y, fill, bar_h))
+    draw_text(f"Boss HP: {b['hp']}", x + 6, y - 2, FONT_MED, WHITE)
+
+def draw_boss_laser(b):
+    # telegraph: thin red line across screen at telegraph_y
+    if b["telegraph_active"] and b.get("telegraph_y") is not None:
+        y = b["telegraph_y"]
+        pygame.draw.line(screen, RED, (0, y), (WIDTH, y), 3)
+    # beam: thick damaging bar
+    if b["beam_active"] and b.get("laser_fire_at"):
+        y = b["laser_fire_at_y"] if b.get("laser_fire_at_y") else b["laser_fire_at"]
+        # we stored telegraph_y; beam uses that
+        y = b.get("telegraph_y") or (ground_y//2)
+        beam_h = 28
+        pygame.draw.rect(screen, RED, (0, y - beam_h//2, WIDTH, beam_h))
+
 # initial reset
 game_over = False
 reset_game()
@@ -206,6 +310,7 @@ reset_game()
 # main loop
 running = True
 last_shop_toggle = 0
+boss_damage_applied_for_current_beam = False  # ensure players take damage once per beam instance
 while running:
     dt = clock.tick(60)
     now_ms = pygame.time.get_ticks()
@@ -217,6 +322,10 @@ while running:
             running = False
 
     keys = pygame.key.get_pressed()
+
+    # spawn boss at 120 seconds (2 minutes) if not spawned
+    if not boss_spawned and elapsed_s >= 120:
+        spawn_boss()
 
     # shop toggle (debounced)
     if keys[pygame.K_h] and (now_ms - last_shop_toggle > SHOP_DEBOUNCE_MS):
@@ -235,38 +344,65 @@ while running:
     # normal gameplay updates
     screen.fill(SKY)
 
-    # spawn enemies & abilities
+    # spawn enemies & abilities (disabled during boss fight)
     spawn_enemies_tick()
     maybe_spawn_ability()
 
+    # If boss active: grant free flight for both players and stop enemy spawning (already handled)
+    boss_active = boss is not None and boss.get("hp", 0) > 0
+
     # --- PLAYER INPUT & ACTIONS ---
-    # Movement axes
-    move1 = (keys[pygame.K_RIGHT] - keys[pygame.K_LEFT])
-    move2 = (keys[pygame.K_d] - keys[pygame.K_a])
+    # Movement axes (if boss fight, allow full flight)
+    if boss_active:
+        # players can move freely in all directions at shared_speed
+        if keys[pygame.K_RIGHT]:
+            player1.x += shared_speed
+        if keys[pygame.K_LEFT]:
+            player1.x -= shared_speed
+        if keys[pygame.K_UP]:
+            player1.y -= shared_speed
+        if keys[pygame.K_DOWN]:
+            player1.y += shared_speed
 
-    if abs(move1) > 0:
-        player1.x += int(move1 * shared_speed)
-    if abs(move2) > 0:
-        player2.x += int(move2 * shared_speed)
+        if keys[pygame.K_d]:
+            player2.x += shared_speed
+        if keys[pygame.K_a]:
+            player2.x -= shared_speed
+        if keys[pygame.K_w]:
+            player2.y -= shared_speed
+        if keys[pygame.K_s]:
+            player2.y += shared_speed
 
-    # Jump
-    if keys[pygame.K_UP] and p_state[0]["on_ground"]:
-        p_state[0]["vel_y"] = JUMP_SPEED
-        p_state[0]["on_ground"] = False
-    if keys[pygame.K_w] and p_state[1]["on_ground"]:
-        p_state[1]["vel_y"] = JUMP_SPEED
-        p_state[1]["on_ground"] = False
+        # clamp inside screen
+        for p in players:
+            p.x = max(0, min(WIDTH - p.width, p.x))
+            p.y = max(60, min(ground_y - p.height, p.y))
+    else:
+        move1 = (keys[pygame.K_RIGHT] - keys[pygame.K_LEFT])
+        move2 = (keys[pygame.K_d] - keys[pygame.K_a])
+        if abs(move1) > 0:
+            player1.x += int(move1 * shared_speed)
+        if abs(move2) > 0:
+            player2.x += int(move2 * shared_speed)
 
-    # Shooting keys
-    # Player1: Right Ctrl
-    if (keys[pygame.K_e] or keys[pygame.K_KP0]):
+        # Jump
+        if keys[pygame.K_UP] and p_state[0]["on_ground"]:
+            p_state[0]["vel_y"] = JUMP_SPEED
+            p_state[0]["on_ground"] = False
+        if keys[pygame.K_w] and p_state[1]["on_ground"]:
+            p_state[1]["vel_y"] = JUMP_SPEED
+            p_state[1]["on_ground"] = False
+
+    # Shooting keys (allowed in boss fight too)
+    # Player1: Right Ctrl or '/' fallback
+    if (keys[pygame.K_RCTRL] or keys[pygame.K_SLASH] or keys[pygame.K_KP0]):
         if now_ms - p_state[0]["last_shot"] >= PLAYER_BULLET_COOLDOWN_MS and len([b for b in player_bullets if b['owner']==1]) < PLAYER_MAX_BULLETS:
             dmg = shared_damage * (2 if double_damage_active else 1)
             rect = pygame.Rect(player1.right, player1.centery - 6, 12, 6)
             player_bullets.append({"rect": rect, "owner": 1, "damage": dmg})
             p_state[0]["last_shot"] = now_ms
-    # Player2: Left Shift
-    if keys[pygame.K_SLASH]:
+    # Player2: Left Shift or 'e' fallback
+    if keys[pygame.K_LSHIFT] or keys[pygame.K_e]:
         if now_ms - p_state[1]["last_shot"] >= PLAYER_BULLET_COOLDOWN_MS and len([b for b in player_bullets if b['owner']==2]) < PLAYER_MAX_BULLETS:
             dmg = shared_damage * (2 if double_damage_active else 1)
             rect = pygame.Rect(player2.right, player2.centery - 6, 12, 6)
@@ -290,17 +426,18 @@ while running:
         if s["block_active"] and now_ms >= s["block_end"]:
             s["block_active"] = False
 
-    # apply gravity & platform collision for players
-    for idx, p in enumerate(players):
-        s = p_state[idx]
-        s["vel_y"] += GRAVITY
-        p.y += s["vel_y"]
-        s["on_ground"] = False
-        for plat in platforms:
-            if p.colliderect(plat) and s["vel_y"] >= 0:
-                p.bottom = plat.top
-                s["vel_y"] = 0
-                s["on_ground"] = True
+    # apply gravity & platform collision for players (only when not boss active)
+    if not boss_active:
+        for idx, p in enumerate(players):
+            s = p_state[idx]
+            s["vel_y"] += GRAVITY
+            p.y += s["vel_y"]
+            s["on_ground"] = False
+            for plat in platforms:
+                if p.colliderect(plat) and s["vel_y"] >= 0:
+                    p.bottom = plat.top
+                    s["vel_y"] = 0
+                    s["on_ground"] = True
 
     # --- PLAYER BULLETS UPDATE ---
     for b in player_bullets[:]:
@@ -309,6 +446,20 @@ while running:
             player_bullets.remove(b)
             continue
         hit_any = False
+        # if boss active, shots should hit the boss as well
+        if boss_active and boss and b["rect"].colliderect(boss["rect"]):
+            boss["hp"] -= b["damage"]
+            hit_any = True
+            if boss["hp"] <= 0:
+                score += 500  # big reward
+                boss_active = False
+                boss = None
+                # resume normal enemy spawning automatically
+        if hit_any:
+            if b in player_bullets:
+                player_bullets.remove(b)
+            continue
+
         for e in enemies[:]:
             if b["rect"].colliderect(e["rect"]):
                 e["hp"] -= b["damage"]
@@ -360,7 +511,6 @@ while running:
     for e in enemies[:]:
         if e["rect"].colliderect(player1):
             if p_state[0]["block_active"]:
-                # destroy enemy if colliding while blocking
                 if e in enemies: enemies.remove(e)
             else:
                 p_state[0]["hearts"] -= 1
@@ -385,7 +535,31 @@ while running:
     if double_damage_active and pygame.time.get_ticks() > double_damage_ends_at:
         double_damage_active = False
 
-    # update player death & game over
+    # Boss logic (movement + lasers)
+    if boss_active and boss:
+        update_boss_movement(boss)
+        boss_laser_logic(boss)
+
+        # draw telegraph and beam and handle beam damage
+        # telegraph drawn below in rendering pass
+        # if beam active, apply damage once per beam to each player if they intersect beam rect
+        if boss.get("beam_active", False):
+            # beam rectangle
+            y = boss.get("telegraph_y") or (ground_y // 2)
+            beam_h = 28
+            beam_rect = pygame.Rect(0, y - beam_h//2, WIDTH, beam_h)
+            # apply damage once per beam activation window
+            if not boss.get("beam_damage_applied", False):
+                if beam_rect.colliderect(player1) and not p_state[0]["block_active"]:
+                    p_state[0]["hearts"] -= 1
+                if beam_rect.colliderect(player2) and not p_state[1]["block_active"]:
+                    p_state[1]["hearts"] -= 1
+                boss["beam_damage_applied"] = True
+        else:
+            if boss:
+                boss["beam_damage_applied"] = False
+
+    # --- update player death & game over ---
     if p_state[0]["hearts"] <= 0:
         player1.y = 2000
     if p_state[1]["hearts"] <= 0:
@@ -408,6 +582,17 @@ while running:
     # draw enemies
     for e in enemies:
         draw_enemy(e)
+
+    # draw boss if present
+    if boss_active and boss:
+        draw_boss(boss)
+        # draw telegraph or beam
+        if boss.get("telegraph_active", False) and boss.get("telegraph_y") is not None:
+            pygame.draw.line(screen, RED, (0, boss["telegraph_y"]), (WIDTH, boss["telegraph_y"]), 3)
+        if boss.get("beam_active", False) and boss.get("telegraph_y") is not None:
+            y = boss["telegraph_y"]
+            beam_h = 28
+            pygame.draw.rect(screen, RED, (0, y - beam_h//2, WIDTH, beam_h))
 
     # draw bullets
     for b in player_bullets:
@@ -435,22 +620,19 @@ while running:
         draw_text("DOUBLE DAMAGE ACTIVE!", WIDTH//2 - 120, 36, FONT_MED, RED)
 
     # draw block cooldown UI above players
-    cool1 = max(0, (p_state[0]["next_block"] - now_ms) // 1000)
-    cool2 = max(0, (p_state[1]["next_block"] - now_ms) // 1000)
-    # show ms remaining if less than 1s
-    if p_state[0]["next_block"] - now_ms < 1000 and p_state[0]["next_block"] - now_ms > 0:
-        cool1 = (p_state[0]["next_block"] - now_ms) // 100
-        draw_text(f"Block CD: {cool1*0.1:.1f}s", player1.x, player1.y - 42, FONT)
+    cool1_ms = max(0, (p_state[0]["next_block"] - now_ms))
+    cool2_ms = max(0, (p_state[1]["next_block"] - now_ms))
+    if cool1_ms > 0:
+        draw_text(f"Block CD: {cool1_ms/1000:.1f}s", player1.x, player1.y - 42, FONT)
     else:
-        draw_text(f"Block CD: {cool1}s", player1.x, player1.y - 42, FONT)
-    if p_state[1]["next_block"] - now_ms < 1000 and p_state[1]["next_block"] - now_ms > 0:
-        cool2 = (p_state[1]["next_block"] - now_ms) // 100
-        draw_text(f"Block CD: {cool2*0.1:.1f}s", player2.x, player2.y - 42, FONT)
+        draw_text("Block Ready", player1.x, player1.y - 42, FONT)
+    if cool2_ms > 0:
+        draw_text(f"Block CD: {cool2_ms/1000:.1f}s", player2.x, player2.y - 42, FONT)
     else:
-        draw_text(f"Block CD: {cool2}s", player2.x, player2.y - 42, FONT)
+        draw_text("Block Ready", player2.x, player2.y - 42, FONT)
 
     # show shop hint
-    draw_text("Press H for Shop (shared upgrades)", 10, HEIGHT - 26, FONT)
+    draw_text("Press H for Shop (shared upgrades)", 200, HEIGHT - 30, FONT)
 
     # game over overlay
     if game_over:
